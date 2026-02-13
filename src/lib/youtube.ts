@@ -1,22 +1,39 @@
 import ytDlp from 'yt-dlp-exec';
-import { VideoInfo } from '@/types';
+import path from 'path';
+import execa from 'execa';
 
-export const getRawInfo = async (url: string): Promise<any> => {
+const isHianime = (url: string) => 
+    url.includes('hianime.to') || 
+    url.includes('hianimez.to') || 
+    url.includes('hianime.is') || 
+    url.includes('hianime.nz');
+
+export const runYtDlp = async (url: string, flags: any, opts?: any) => {
+    if (isHianime(url)) {
+        const pluginDirs = path.join(process.cwd(), 'yt_dlp_plugins');
+        const finalFlags = { ...flags, pluginDirs };
+        const args = [
+            '-m', 'yt_dlp',
+            ...ytDlp.args(url, finalFlags)
+        ];
+        return execa('python', args, opts);
+    }
+    return ytDlp.exec(url, flags, opts);
+};
+
+export const getRawInfo = async (url: string): Promise<unknown> => {
     try {
-        const output = await ytDlp(url, {
-            dumpSingleJson: true, // Use dumpSingleJson to get JSON object directly
+        const flags = {
+            dumpSingleJson: true,
             noWarnings: true,
-            noCallHome: true,
             preferFreeFormats: true,
-            youtubeSkipDashManifest: true,
-        } as any);
-        return output;
+            noCheckCertificate: true,
+        };
+
+        const { stdout } = await runYtDlp(url, flags);
+        return JSON.parse(stdout);
     } catch (error) {
         console.error('yt-dlp error:', error);
         throw error;
     }
-};
-
-export const getStream = async (url: string, options: any) => {
-    throw new Error('Use processDownload directly');
 };

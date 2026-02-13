@@ -1,18 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import ytDlp from 'yt-dlp-exec';
-import { Readable } from 'stream';
+import { runYtDlp } from '@/lib/youtube';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import ffmpegPath from 'ffmpeg-static';
+import { SubtitleMode } from '@/types';
+import { normalizeYtDlpError } from '@/lib/errors';
 
-// Helper to stream file deletion
-function streamFile(filePath: string): ReadableStream {
-    // Check if file exists
-    if (!fs.existsSync(filePath)) {
-        throw new Error('File download failed (file not found)');
-    }
+type DownloadType = 'mp4' | 'mp3';
+type DownloadArtifact = 'video' | 'subtitle';
 
+const readType = (value: string | null): DownloadType | null => {
+    if (value === 'mp4' || value === 'mp3') return value;
+    return null;
+};
+
+const readSubtitleMode = (value: string | null): SubtitleMode => {
+    if (value === 'embedded' || value === 'external') return value;
+    return 'none';
+};
+
+const streamFile = (filePath: string, onDone: () => void): ReadableStream => {
     const fileStream = fs.createReadStream(filePath);
 
     return new ReadableStream({
@@ -20,112 +28,168 @@ function streamFile(filePath: string): ReadableStream {
             fileStream.on('data', (chunk) => controller.enqueue(chunk));
             fileStream.on('end', () => {
                 controller.close();
-                // File is sent, delete it
-                fs.unlink(filePath, (err) => {
-                    if (err) console.error('Error deleting temp file:', err);
-                });
+                onDone();
             });
             fileStream.on('error', (err) => {
                 controller.error(err);
-                fs.unlink(filePath, () => { }); // Try cleanup
+                onDone();
             });
         },
         cancel() {
             fileStream.destroy();
-            fs.unlink(filePath, () => { });
-        }
+            onDone();
+        },
     });
-}
+};
+
+const cleanupByPrefix = (dir: string, prefix: string) => {
+    try {
+        for (const file of fs.readdirSync(dir)) {
+            if (!file.startsWith(prefix)) continue;
+            fs.unlink(path.join(dir, file), () => {});
+        }
+    } catch (error) {
+        console.error('Cleanup error:', error);
+    }
+};
+
+const findOutputFile = (
+    tempDir: string,
+    filePrefix: string,
+    artifact: DownloadArtifact,
+): string | null => {
+    const files = fs
+        .readdirSync(tempDir)
+        .filter((file) => file.startsWith(filePrefix))
+        .sort();
+
+    if (artifact === 'subtitle') {
+        const subtitleFile = files.find((file) =>
+            /\.(srt|vtt|ass|ssa|ttml)$/i.test(file),
+        );
+        return subtitleFile ? path.join(tempDir, subtitleFile) : null;
+    }
+
+    const mp4File = files.find((file) => /\.mp4$/i.test(file));
+    if (mp4File) return path.join(tempDir, mp4File);
+
+    const videoFile = files.find((file) => /\.(mkv|webm|mov)$/i.test(file));
+    return videoFile ? path.join(tempDir, videoFile) : null;
+};
+
+const contentTypeForExtension = (extension: string): string => {
+    switch (extension.toLowerCase()) {
+        case 'mp3':
+            return 'audio/mpeg';
+        case 'mp4':
+            return 'video/mp4';
+        case 'mkv':
+            return 'video/x-matroska';
+        case 'webm':
+            return 'video/webm';
+        case 'srt':
+            return 'application/x-subrip';
+        case 'vtt':
+            return 'text/vtt';
+        case 'ass':
+        case 'ssa':
+            return 'text/plain';
+        default:
+            return 'application/octet-stream';
+    }
+};
+
+const getErrorMessage = (error: unknown): string => {
+    return normalizeYtDlpError(error, 'Download failed');
+};
 
 export async function GET(req: NextRequest) {
     const url = req.nextUrl.searchParams.get('url');
-    const type = req.nextUrl.searchParams.get('type') as 'mp4' | 'mp3';
-    const formatId = req.nextUrl.searchParams.get('itag'); // Format ID from info
+    const type = readType(req.nextUrl.searchParams.get('type'));
+    const formatId = req.nextUrl.searchParams.get('itag');
+    const subtitleMode = readSubtitleMode(req.nextUrl.searchParams.get('subtitleMode'));
+    const subtitleLang = req.nextUrl.searchParams.get('subtitleLang') || 'en';
+    const artifact =
+        req.nextUrl.searchParams.get('artifact') === 'subtitle'
+            ? 'subtitle'
+            : 'video';
 
     if (!url || !type) {
-        return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
+        return NextResponse.json({ error: 'Missing or invalid parameters' }, { status: 400 });
+    }
+
+    if (type === 'mp3' && artifact === 'subtitle') {
+        return NextResponse.json({ error: 'Subtitle artifact requires mp4 mode' }, { status: 400 });
     }
 
     const tempDir = os.tmpdir();
-    // Unique ID for this download
-    const uniqueId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+    const uniqueId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const filePrefix = `ytdl-${uniqueId}`;
+    const outputTemplate = path.join(tempDir, `${filePrefix}.%(ext)s`);
 
     try {
-        // We use a fixed filename pattern to ensure we can find it reliably
-        // yt-dlp will replace %(ext)s with actual extension (mp4/mp3/mkv)
-        const outputTemplate = path.join(tempDir, `ytdl-${uniqueId}.%(ext)s`);
-
-        const flags: any = {
+        const flags: Record<string, string | boolean | number> = {
             noWarnings: true,
-            noCallHome: true,
             noCheckCertificate: true,
             output: outputTemplate,
             restrictFilenames: true,
-            ffmpegLocation: ffmpegPath // Critical for merging!
         };
+
+        if (ffmpegPath) {
+            flags.ffmpegLocation = ffmpegPath;
+        }
 
         if (type === 'mp3') {
             flags.extractAudio = true;
             flags.audioFormat = 'mp3';
-            flags.audioQuality = '0'; // Best
+            flags.audioQuality = '0';
+        } else if (artifact === 'subtitle') {
+            flags.skipDownload = true;
+            flags.writeSub = true;
+            flags.writeAutoSub = true;
+            flags.subLang = subtitleLang;
+            flags.subFormat = 'srt/best';
+            flags.convertSubs = 'srt';
         } else {
-            // Video MP4
-            // Force mp4 container. yt-dlp will merge video+audio and convert if needed.
             flags.mergeOutputFormat = 'mp4';
+            flags.format = formatId ? `${formatId}+bestaudio/best` : 'bestvideo+bestaudio/best';
 
-            if (formatId) {
-                // If specific format ID provided (e.g. 137 for 1080p)
-                // merge with best audio
-                flags.format = `${formatId}+bestaudio/best`;
-            } else {
-                // Default best
-                flags.format = 'bestvideo+bestaudio/best';
+            if (subtitleMode === 'embedded') {
+                flags.writeSub = true;
+                flags.writeAutoSub = true;
+                flags.embedSubs = true;
+                flags.subLang = subtitleLang;
+                flags.subFormat = 'srt/best';
+                flags.convertSubs = 'srt';
             }
         }
 
-        console.log(`Starting download for ${url} (Flags: ${JSON.stringify(flags)})`);
+        await runYtDlp(url, flags);
 
-        // Execute download
-        await ytDlp(url, flags);
-
-        // Find the file
-        // If output template was `ytdl-ID.%(ext)s`.
-        // We expect .mp3 or .mp4.
-        let extension = type === 'mp3' ? 'mp3' : 'mp4';
-        let finalPath = path.join(tempDir, `ytdl-${uniqueId}.${extension}`);
-
-        if (!fs.existsSync(finalPath)) {
-            // Fallback: check directory for matching ID if extension differed (e.g. mkv)
-            // Note: mergeOutputFormat should force mp4, but if it failed, maybe mkv left?
-            const files = fs.readdirSync(tempDir);
-            const match = files.find(f => f.startsWith(`ytdl-${uniqueId}.`));
-            if (match) {
-                finalPath = path.join(tempDir, match);
-                extension = match.split('.').pop() || extension;
-            } else {
-                console.error('File not found in temp dir:', tempDir, 'Pattern:', `ytdl-${uniqueId}`);
-                throw new Error('Downloaded file not found on execution completion.');
-            }
+        const outputPath = findOutputFile(tempDir, filePrefix, artifact);
+        if (!outputPath || !fs.existsSync(outputPath)) {
+            throw new Error(
+                artifact === 'subtitle'
+                    ? 'Subtitle file was not generated for the selected language.'
+                    : 'Downloaded file not found after completion.',
+            );
         }
 
-        const stat = fs.statSync(finalPath);
-        const stream = streamFile(finalPath);
+        const stat = fs.statSync(outputPath);
+        const extension = path.extname(outputPath).replace('.', '').toLowerCase();
+        const stream = streamFile(outputPath, () => cleanupByPrefix(tempDir, filePrefix));
+        const filenamePrefix = artifact === 'subtitle' ? 'subtitle' : type === 'mp3' ? 'audio' : 'video';
 
         return new NextResponse(stream, {
             headers: {
-                // We give a generic name + timestamp usually, or could fetch title again.
-                // But better to just call it "video.mp4" or "audio.mp3" to avoid header unicode issues,
-                // or use the title passed in params if we had it? 
-                // We can just use "download" for now.
-                'Content-Disposition': `attachment; filename="download_${uniqueId}.${extension}"`,
-                'Content-Type': type === 'mp3' ? 'audio/mpeg' : 'video/mp4',
+                'Content-Disposition': `attachment; filename="${filenamePrefix}_${uniqueId}.${extension}"`,
+                'Content-Type': contentTypeForExtension(extension),
                 'Content-Length': stat.size.toString(),
-            }
+            },
         });
-
-    } catch (error: any) {
+    } catch (error: unknown) {
+        cleanupByPrefix(tempDir, filePrefix);
         console.error('Download error:', error);
-        // Cleanup if possible? (Hard to know partial files)
-        return NextResponse.json({ error: error.message || 'Download failed' }, { status: 500 });
+        return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
     }
 }

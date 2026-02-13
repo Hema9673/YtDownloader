@@ -1,5 +1,5 @@
 export interface VideoFormat {
-    itag: number;
+    itag: string;
     url: string;
     mimeType?: string;
     qualityLabel?: string;
@@ -13,10 +13,21 @@ export interface VideoFormat {
     contentLength?: string;
 }
 
+export interface SubtitleTrack {
+    lang: string;
+    label: string;
+    source: 'manual' | 'auto';
+    ext?: string;
+}
+
+export type SubtitleMode = 'none' | 'embedded' | 'external';
+
 export interface VideoInfo {
     title: string;
     thumbnail: string;
     duration: string | number;
     formats: VideoFormat[];
     url: string;
+    provider: string;
+    subtitles: SubtitleTrack[];
 }
