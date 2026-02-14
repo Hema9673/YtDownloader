@@ -2,11 +2,11 @@ import ytDlp from 'yt-dlp-exec';
 import path from 'path';
 import execa from 'execa';
 
-const isHianime = (url: string) => 
-    url.includes('hianime.to') || 
-    url.includes('hianimez.to') || 
-    url.includes('hianime.is') || 
-    url.includes('hianime.nz');
+const ytArgs = (ytDlp as any).args;
+const ytExec = (ytDlp as any).exec;
+
+export const isHianime = (url: string) => 
+    /hianime(?:z)?\.(?:to|is|nz|bz|pe|cx|gs|do)/.test(url);
 
 export const runYtDlp = async (url: string, flags: any, opts?: any) => {
     if (isHianime(url)) {
@@ -14,11 +14,11 @@ export const runYtDlp = async (url: string, flags: any, opts?: any) => {
         const finalFlags = { ...flags, pluginDirs };
         const args = [
             '-m', 'yt_dlp',
-            ...ytDlp.args(url, finalFlags)
+            ...ytArgs(url, finalFlags)
         ];
         return execa('python', args, opts);
     }
-    return ytDlp.exec(url, flags, opts);
+    return ytExec(url, flags, opts);
 };
 
 export const getRawInfo = async (url: string): Promise<unknown> => {

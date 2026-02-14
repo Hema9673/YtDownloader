@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runYtDlp } from '@/lib/youtube';
+import { runYtDlp, isHianime } from '@/lib/youtube';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -73,6 +73,9 @@ const findOutputFile = (
     const mp4File = files.find((file) => /\.mp4$/i.test(file));
     if (mp4File) return path.join(tempDir, mp4File);
 
+    const audioFile = files.find((file) => /\.mp3$/i.test(file));
+    if (audioFile) return path.join(tempDir, audioFile);
+
     const videoFile = files.find((file) => /\.(mkv|webm|mov)$/i.test(file));
     return videoFile ? path.join(tempDir, videoFile) : null;
 };
@@ -143,6 +146,9 @@ export async function GET(req: NextRequest) {
             flags.extractAudio = true;
             flags.audioFormat = 'mp3';
             flags.audioQuality = '0';
+            if (formatId) {
+                flags.format = formatId;
+            }
         } else if (artifact === 'subtitle') {
             flags.skipDownload = true;
             flags.writeSub = true;
@@ -152,7 +158,12 @@ export async function GET(req: NextRequest) {
             flags.convertSubs = 'srt';
         } else {
             flags.mergeOutputFormat = 'mp4';
-            flags.format = formatId ? `${formatId}+bestaudio/best` : 'bestvideo+bestaudio/best';
+            
+            if (isHianime(url) && formatId) {
+                flags.format = formatId;
+            } else {
+                flags.format = formatId ? `${formatId}+bestaudio/best` : 'bestvideo+bestaudio/best';
+            }
 
             if (subtitleMode === 'embedded') {
                 flags.writeSub = true;

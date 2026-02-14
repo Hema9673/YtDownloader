@@ -16,6 +16,7 @@ interface YtDlpFormat {
     vcodec?: string;
     acodec?: string;
     filesize?: number | string;
+    language?: string;
 }
 
 interface YtDlpSubtitleEntry {
@@ -37,7 +38,7 @@ const providers = [
     {
         id: 'hianime',
         match: (url: string): ProviderMatchResult | null => {
-            if (url.includes('hianime.to') || url.includes('hianimez.to')) {
+            if (/hianime(?:z)?\.(?:to|is|nz|bz|pe|cx|gs|do)/.test(url)) {
                 return { id: 'hianime' };
             }
             return null;
@@ -54,7 +55,7 @@ export const resolveProvider = (url: string): ProviderMatchResult => {
         const match = provider.match(url);
         if (match) return match;
     }
-    return providers[providers.length - 1].match();
+    return { id: 'yt-dlp-generic' };
 };
 
 const normalizeFormats = (formats: YtDlpFormat[]): VideoFormat[] => {
@@ -71,6 +72,7 @@ const normalizeFormats = (formats: YtDlpFormat[]): VideoFormat[] => {
         hasAudio: format.acodec !== 'none',
         contentLength:
             format.filesize === undefined ? undefined : String(format.filesize),
+        language: format.language,
     }));
 };
 

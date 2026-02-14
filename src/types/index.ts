@@ -11,6 +11,7 @@ export interface VideoFormat {
     hasVideo: boolean;
     hasAudio: boolean;
     contentLength?: string;
+    language?: string;
 }
 
 export interface SubtitleTrack {

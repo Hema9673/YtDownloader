@@ -45,6 +45,7 @@ export default function Home() {
   const [mode, setMode] = useState<'mp4' | 'mp3'>('mp4');
   const [selectedQuality, setSelectedQuality] = useState<string>('');
   const [resolutions, setResolutions] = useState<VideoFormat[]>([]);
+  const [selectedVersion, setSelectedVersion] = useState<'sub' | 'dub'>('sub');
   const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>('none');
   const [selectedSubtitleLang, setSelectedSubtitleLang] = useState<string>('');
 
@@ -55,6 +56,7 @@ export default function Home() {
     setInfo(null);
     setSubtitleMode('none');
     setSelectedSubtitleLang('');
+    setSelectedVersion('sub');
 
     try {
       const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
@@ -63,7 +65,13 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || 'Failed to fetch video info');
 
       setInfo(data);
-      processFormats(data.formats);
+      
+      const hasDub = data.formats.some((f: VideoFormat) => f.itag.startsWith('dub_'));
+      const hasSub = data.formats.some((f: VideoFormat) => f.itag.startsWith('sub_'));
+      
+      const initialVersion = hasSub ? 'sub' : (hasDub ? 'dub' : 'sub');
+      setSelectedVersion(initialVersion);
+      processFormats(data.formats, initialVersion);
 
       if (data.subtitles?.length) {
         const english = data.subtitles.find((item: { lang: string }) => item.lang.startsWith('en'));
@@ -76,11 +84,18 @@ export default function Home() {
     }
   };
 
-  const processFormats = (formats: VideoFormat[]) => {
+  const processFormats = (formats: VideoFormat[], version?: 'sub' | 'dub') => {
     const uniqueMap = new Map<number, VideoFormat>();
+    const targetVersion = version || selectedVersion;
 
     formats.forEach((format) => {
       if (!format.hasVideo || !format.height) return;
+
+      // Filter by version if itag has sub_ or dub_ prefix
+      if (format.itag.startsWith('sub_') || format.itag.startsWith('dub_')) {
+        const [v] = format.itag.split('_');
+        if (v !== targetVersion) return;
+      }
 
       const existing = uniqueMap.get(format.height);
       if (!existing) {
@@ -108,7 +123,7 @@ export default function Home() {
       artifact,
     });
 
-    if (mode === 'mp4' && selectedQuality) {
+    if (selectedQuality) {
       params.append('itag', selectedQuality);
     }
 
@@ -251,6 +266,33 @@ export default function Home() {
                       <Music className="w-4 h-4" /> Audio
                     </button>
                   </div>
+
+                  {info.provider === 'hianime' && (
+                    <div className="space-y-2">
+                      <label className="text-sm text-white/40 font-medium ml-1">Select Version</label>
+                      <div className="flex gap-2">
+                        {['sub', 'dub'].map((v) => {
+                          const available = info.formats.some(f => f.itag.startsWith(`${v}_`));
+                          if (!available) return null;
+                          return (
+                            <button
+                              key={v}
+                              onClick={() => {
+                                setSelectedVersion(v as 'sub' | 'dub');
+                                processFormats(info.formats, v as 'sub' | 'dub');
+                              }}
+                              className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-all ${selectedVersion === v
+                                ? 'bg-white text-black border-white'
+                                : 'bg-transparent border-white/10 text-white/60 hover:bg-white/5'
+                                }`}
+                            >
+                              {v.toUpperCase()}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {mode === 'mp4' && (
                     <div className="space-y-2">

@@ -141,7 +141,15 @@ class HiAnimeIE(InfoExtractor):
                     if re.search(rf'>\s*{re.escape(target_link_text)}\s*</a>', s.group(0))
                     and re.search(r'data-id="([^"]+)"', s.group(0))
                 ),
-                None
+                next(
+                    (
+                        re.search(r'data-id="([^"]+)"', s.group(0)).group(1)
+                        for s in server_items_filtered 
+                        if re.search(r'>\s*HD-[12]\s*</a>', s.group(0))
+                        and re.search(r'data-id="([^"]+)"', s.group(0))
+                    ),
+                    None
+                )
             )
             if not server_id:
                 continue
@@ -184,6 +192,7 @@ class HiAnimeIE(InfoExtractor):
                     subtitles.setdefault(lang_code, []).append({
                         'name': label,
                         'url': file_url,
+                        'http_headers': {"Referer": "https://megacloud.blog/"}
                     })
         return {
             'id': episode_id,
